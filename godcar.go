@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
 
 	"github.com/chifflier/nfqueue-go/nfqueue"
+
+	"github.com/sergi/go-diff/diffmatchpatch"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -29,9 +33,9 @@ func realCallback(payload *nfqueue.Payload) int {
 	fmt.Printf("  id: %d\n", payload.Id)
 	fmt.Println(hex.Dump(payload.Data))
 	if app := packet.ApplicationLayer(); app != nil {
-		if strings.Contains(string(app.Payload()), "magic string") {
+		if strings.Contains(string(app.Payload()), "cloud") {
 			// modify payload of application layer
-			*packet.ApplicationLayer().(*gopacket.Payload) = []byte("modifiedvalue")
+			*packet.ApplicationLayer().(*gopacket.Payload) = bytes.ReplaceAll(app.Payload(), []byte("cloud"), []byte("butt"))
 
 			// if its tcp we need to tell it which network layer is being used
 			// to be able to handle multiple protocols we can add a if clause around this
@@ -49,8 +53,10 @@ func realCallback(payload *nfqueue.Payload) int {
 			}
 
 			packetBytes := buffer.Bytes()
-			fmt.Printf("  id: %d MODIFIED\n", payload.Id)
-			fmt.Println(hex.Dump(packetBytes))
+			//fmt.Printf("  id: %d MODIFIED\n", payload.Id)
+			dmp := diffmatchpatch.New()
+			diffs := dmp.DiffMain(hex.Dump(payload.Data), hex.Dump(packetBytes), true)
+			fmt.Println(dmp.DiffPrettyText(diffs))
 			payload.SetVerdictModified(nfqueue.NF_ACCEPT, packetBytes)
 			return 0
 		}
@@ -72,6 +78,16 @@ func main() {
 
 	q.CreateQueue(0)
 
+	cmd := exec.Command("iptables", "-t", "raw", "-A", "PREROUTING", "-p", "tcp", "--source-port", "43594:43595", "-j", "NFQUEUE", "--queue-num", "0")
+	stdout, err := cmd.Output()
+
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	} else {
+		fmt.Println(string(stdout))
+	}
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	log.SetOutput(ioutil.Discard)
@@ -88,5 +104,16 @@ func main() {
 	q.Loop()
 	q.DestroyQueue()
 	q.Close()
+
+	unroute := exec.Command("iptables", "-F")
+	stdoutUnroute, err := unroute.Output()
+
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	} else {
+		fmt.Println(string(stdoutUnroute))
+	}
+
 	os.Exit(0)
 }
